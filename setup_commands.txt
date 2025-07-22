@@ -1,0 +1,19 @@
+# STEP 1: Create project folder
+mkdir odoo_dashboard
+cd odoo_dashboard
+
+# STEP 2: Install dependencies
+pip install flask flask-sqlalchemy psycopg2-binary
+
+# STEP 3: Create the corrected app.py file
+# Copy the content from the corrected app.py (see below)
+
+# STEP 4: Run the application
+python app.py
+
+# STEP 5: Open browser to:
+# http://localhost:5000
+
+# ======= CORRECTED APP.PY CONTENT =======
+# Copy everything from line 1 to 1407 from the corrected app.py file
+# The key correction is on line 12: app.secret_key = 'your-secret-key-here-change-in-production'
