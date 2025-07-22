@@ -1,4 +1,4 @@
-﻿from flask import Flask, render_template_string, request, jsonify, flash, redirect, url_for
+from flask import Flask, render_template_string, request, jsonify, flash, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 from collections import Counter
@@ -9,6 +9,7 @@ import random
 import re
 
 app = Flask(__name__)
+app.secret_key = 'your-secret-key-here-change-in-production'
 
 # Database configuration - UPDATE YOUR CREDENTIALS HERE
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:postgres@localhost/new_db4'
