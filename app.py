@@ -8,6 +8,8 @@ import csv
 import random
 import re
 from dateutil.relativedelta import relativedelta
+from calendar import monthrange
+import math
 
 app = Flask(__name__)
 
@@ -107,6 +109,10 @@ def dashboard():
         db.func.sum(SaleOrder.amount_total)
     ).filter(SaleOrder.date_order.between(start_date, end_date)).group_by(SaleOrder.state).all()
 
+    # Before rendering the dashboard template, convert status_data and top_customers to lists of tuples
+    status_data = [tuple(row) for row in status_data]
+    top_customers = [tuple(row) for row in top_customers]
+
     # --- NEW CHARTS DATA ---
     # 1. Sales by Day of Week (Radar Chart)
     days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -166,6 +172,21 @@ def dashboard():
     ).filter(SaleOrder.date_order.between(start_date, end_date)).order_by(
         SaleOrder.date_order.desc()
     ).offset((page - 1) * per_page).limit(per_page).all()
+
+    # Top clients by revenue
+    top_clients_by_revenue = (
+        db.session.query(
+            Partner.name,
+            db.func.sum(SaleOrder.amount_total).label('total_revenue')
+        )
+        .join(SaleOrder, Partner.id == SaleOrder.partner_id)
+        .filter(SaleOrder.date_order.between(start_date, end_date))
+        .group_by(Partner.name)
+        .order_by(db.desc('total_revenue'))
+        .limit(10)
+        .all()
+    )
+    top_clients_by_revenue = [tuple(row) for row in top_clients_by_revenue]
 
     return render_template_string('''
 <!DOCTYPE html>
@@ -396,7 +417,7 @@ def dashboard():
             flex-direction: column;
             align-items: center;
         }
-        canvas { max-width: 100%; width: 1000px !important; height: 700px !important; }
+        canvas { max-width: 100%; width: 1000px !important; height: 500px !important; }
         .chart-slider-container {
             display: flex;
             align-items: center;
@@ -421,8 +442,8 @@ def dashboard():
             background: linear-gradient(90deg,#f72585,#4361ee);
         }
         .chart-slider {
-            width: 650px;
-            height: 380px;
+            width: 1000px;
+            height: 500px;
             overflow: hidden;
             position: relative;
             display: flex;
@@ -438,12 +459,31 @@ def dashboard():
             display: flex;
         }
         .chart-slider canvas {
-            width: 600px !important;
-            height: 340px !important;
+            width: 1000px !important;
+            height: 500px !important;
             background: #23244d;
             border-radius: 18px;
             box-shadow: 0 8px 32px rgba(67,97,238,0.13);
             border: 2px solid #fff;
+        }
+        .empty-state {
+            width: 1000px;
+            height: 500px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #23244d;
+            border-radius: 18px;
+            border: 2px dashed #4cc9f0;
+            color: #4cc9f0;
+            font-size: 2rem;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 #4cc9f055; }
+            70% { box-shadow: 0 0 0 16px #4cc9f000; }
+            100% { box-shadow: 0 0 0 0 #4cc9f000; }
         }
     </style>
 </head>
@@ -487,18 +527,25 @@ def dashboard():
         </div>
     </div>
 
-    <!-- Chart Gallery Slider -->
+    <!-- Add Sales Heatmap and Gauge containers to the slider -->
     <div class="chart-slider-container">
         <button class="slider-arrow left" onclick="prevSlide()">&#8592;</button>
         <div class="chart-slider">
             <div class="slide"><canvas id="trendChart"></canvas></div>
+            <div class="slide"><canvas id="salesStatusPieChart"></canvas></div>
             <div class="slide"><canvas id="statusChart"></canvas></div>
-            <div class="slide"><canvas id="customersChart"></canvas></div>
-            <div class="slide"><canvas id="revenueChart"></canvas></div>
-            <div class="slide"><canvas id="salesByDayChart"></canvas></div>
-            <div class="slide"><canvas id="orderValueHistogram"></canvas></div>
-            <div class="slide"><canvas id="salesFunnelChart"></canvas></div>
+            <div class="slide"><canvas id="mostActiveClientsChart"></canvas></div>
+            <div class="slide"><canvas id="mostProfitableClientsChart"></canvas></div>
+            <div class="slide"><canvas id="salesByPeriodChart"></canvas></div>
             <div class="slide"><canvas id="aovTrendChart"></canvas></div>
+            <div class="slide"><canvas id="topProductsChart"></canvas></div>
+            <div class="slide"><canvas id="salesFunnelChart"></canvas></div>
+            <div class="slide"><canvas id="orderValueHistogram"></canvas></div>
+            <div class="slide"><canvas id="salesHeatmap"></canvas></div>
+            {% if geo_data and geo_data|length > 0 %}
+            <div class="slide"><canvas id="geoSalesMap"></canvas></div>
+            {% endif %}
+            <div class="slide"><canvas id="customerSegmentationChart"></canvas></div>
         </div>
         <button class="slider-arrow right" onclick="nextSlide()">&#8594;</button>
     </div>
@@ -567,36 +614,47 @@ def dashboard():
             increment();
         }
         document.addEventListener('DOMContentLoaded', function() {
+            const statusOrder = ["Draft", "Sent", "Sale", "Done", "Cancel"];
             // Animate KPIs
             animateKPI('kpi-total-sales', Number({{ total_sales }}), '$', '', 2);
             animateKPI('kpi-order-count', Number({{ order_count }}));
             animateKPI('kpi-avg-order', Number({{ avg_order }}), '$', '', 2);
             animateKPI('kpi-new-customers', Number({{ new_customers }}));
 
-            // Sales Trend Chart (sample data, replace with real data for production)
-            const trendData = {
-                labels: Array.from({length: 30}, (_, i) => {
+            // --- Inject sample data for demo if empty ---
+            let salesData = {{ trendData.data|tojson if trendData and trendData.data else 'null' }};
+            let salesLabels = {{ trendData.labels|tojson if trendData and trendData.labels else 'null' }};
+            if (!salesData || salesData.length === 0) {
+                salesLabels = Array.from({length: 30}, (_, i) => {
                     const d = new Date();
                     d.setDate(d.getDate() - 30 + i);
                     return d.toLocaleDateString();
-                }),
-                data: Array.from({length: 30}, () => Math.floor(Math.random() * 10000) + 1000)
-            };
-            new Chart(document.getElementById('trendChart'), {
+                });
+                salesData = Array.from({length: 30}, () => Math.floor(Math.random() * 10000) + 1000);
+            }
+            // Sales Trend Chart (animated area)
+            const trendCtx = document.getElementById('trendChart').getContext('2d');
+            const grad = trendCtx.createLinearGradient(0, 0, 0, 500);
+            grad.addColorStop(0, '#4cc9f0cc');
+            grad.addColorStop(1, '#4361ee11');
+            new Chart(trendCtx, {
                 type: 'line',
                 data: {
-                    labels: trendData.labels,
+                    labels: salesLabels,
                     datasets: [{
                         label: 'Daily Sales',
-                        data: trendData.data,
-                        borderColor: 'rgba(67, 97, 238, 1)',
-                        backgroundColor: 'rgba(67, 97, 238, 0.1)',
-                        tension: 0.3,
-                        fill: true
+                        data: salesData,
+                        borderColor: '#4cc9f0',
+                        backgroundColor: grad,
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        borderWidth: 4
                     }]
                 },
                 options: {
                     responsive: true,
+                    animation: { duration: 1800, easing: 'easeInOutQuart' },
                     plugins: {
                         tooltip: {
                             callbacks: {
@@ -605,46 +663,109 @@ def dashboard():
                         },
                         title: {
                             display: true,
-                            text: 'Sales Trend'
+                            text: 'Sales Trend',
+                            color: '#4cc9f0',
+                            font: { size: 32, weight: 'bold', family: 'Inter' }
                         }
                     },
                     scales: {
                         y: {
                             ticks: {
+                                color: '#fff',
                                 callback: (value) => '$' + value.toLocaleString()
-                            }
+                            },
+                            grid: { color: '#4cc9f055' }
+                        },
+                        x: {
+                            ticks: { color: '#fff' },
+                            grid: { color: '#4cc9f022' }
                         }
                     }
                 }
             });
-            // Status Chart
+            // Orders Radial Bar (Polar Area) - always show all statuses in logical order
+            // Add hint tooltip on hover
+            const statusChartCanvas = document.getElementById('statusChart');
+            if (statusChartCanvas) {
+                statusChartCanvas.title = 'This chart shows the distribution of your orders by status. If only one status is present, the whole pie will be that status.';
+            }
+            let orderDataRaw = {{ status_data|tojson if status_data else '[]' }};
+            let orderCounts = {};
+            if (orderDataRaw && orderDataRaw.length > 0) {
+                for (const s of orderDataRaw) {
+                    orderCounts[(s[0] || '').charAt(0).toUpperCase() + (s[0] || '').slice(1)] = s[1];
+                }
+            }
+            let orderData = statusOrder.map(s => orderCounts[s] || 0);
+            let orderLabels = statusOrder;
+            let totalOrders = orderData.reduce((a, b) => a + b, 0);
+            let nonZeroStatuses = orderData.filter(x => x > 0).length;
+            let chartType = (nonZeroStatuses === 1) ? 'pie' : 'polarArea';
+            let pieColors = ['#4cc9f0', '#4361ee', '#f72585', '#f8961e', '#3a0ca3'];
+            let usedColors = [];
+            if (chartType === 'pie') {
+                // Only show the nonzero status as a full pie
+                let idx = orderData.findIndex(x => x > 0);
+                orderData = [orderData[idx]];
+                orderLabels = [statusOrder[idx]];
+                usedColors = [pieColors[idx]];
+            } else {
+                usedColors = pieColors;
+            }
+            if (totalOrders === 0) {
+                orderData = [5, 8, 12, 7, 2];
+                orderLabels = statusOrder;
+                usedColors = pieColors;
+                totalOrders = orderData.reduce((a, b) => a + b, 0);
+                chartType = 'polarArea';
+            }
             new Chart(document.getElementById('statusChart'), {
-                type: 'doughnut',
+                type: chartType,
                 data: {
-                    labels: {{ status_data|map(attribute='0')|list|tojson }},
+                    labels: orderLabels,
                     datasets: [{
-                        data: {{ status_data|map(attribute='2')|list|tojson }},
-                        backgroundColor: [
-                            '#4cc9f0', '#4361ee', '#f72585', '#f8961e', '#3a0ca3'
-                        ]
+                        data: orderData,
+                        backgroundColor: usedColors
                     }]
                 },
                 options: {
                     responsive: true,
                     plugins: {
-                        legend: { position: 'right' },
-                        datalabels: {
-                            formatter: (value) => '$' + value.toLocaleString(),
-                            color: '#fff'
-                        },
+                        legend: { position: 'right', labels: { color: '#fff', font: { size: 18 } } },
                         title: {
                             display: true,
-                            text: 'Sales Distribution by Status'
+                            text: 'Orders by Status',
+                            color: '#f72585',
+                            font: { size: 28, weight: 'bold', family: 'Inter' }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const count = context.raw;
+                                    const percent = totalOrders > 0 ? Math.round(100 * count / totalOrders) : 0;
+                                    return `${context.label}: ${count} orders (${percent}%)`;
+                                }
+                            }
                         }
                     }
-                },
-                plugins: [ChartDataLabels]
+                }
             });
+            // Empty state for customersChart and revenueChart
+            function showEmptyState(canvasId, message) {
+                const canvas = document.getElementById(canvasId);
+                const parent = canvas.parentElement;
+                canvas.style.display = 'none';
+                let emptyDiv = document.createElement('div');
+                emptyDiv.className = 'empty-state';
+                emptyDiv.innerHTML = `<div style="font-size:4rem;">🚀</div><div>${message}</div>`;
+                parent.appendChild(emptyDiv);
+            }
+            if (!{{ top_customers|length }} || {{ top_customers|length }} === 0) {
+                showEmptyState('customersChart', 'No customers yet! Your first customer will appear here.');
+            }
+            if (!{{ top_products|length }} || {{ top_products|length }} === 0) {
+                showEmptyState('revenueChart', 'No product revenue yet! Start selling to see this chart.');
+            }
             // Top Customers Chart
             new Chart(document.getElementById('customersChart'), {
                 type: 'bar',
@@ -811,6 +932,177 @@ def dashboard():
                     }
                 }
             });
+            // --- Sales Heatmap ---
+            const heatmapCanvas = document.getElementById('salesHeatmap');
+            if (heatmapCanvas) {
+                const ctx = heatmapCanvas.getContext('2d');
+                // Generate 6 months of days
+                const today = new Date();
+                const days = [];
+                for (let i = 179; i >= 0; i--) {
+                    const d = new Date(today);
+                    d.setDate(today.getDate() - i);
+                    days.push(d);
+                }
+                // Generate random sales for demo (replace with real data if available)
+                let salesByDay = days.map(() => Math.floor(Math.random() * 10));
+                // Color scale
+                function getColor(val) {
+                    if (val === 0) return '#23244d';
+                    if (val < 3) return '#4cc9f055';
+                    if (val < 6) return '#4cc9f0aa';
+                    return '#4cc9f0';
+                }
+                // Draw grid
+                const cellSize = 22;
+                const padding = 40;
+                ctx.clearRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
+                ctx.font = '14px Inter';
+                ctx.fillStyle = '#fff';
+                ctx.fillText('Sales Activity (last 6 months)', padding, 30);
+                for (let i = 0; i < days.length; i++) {
+                    const week = Math.floor(i / 7);
+                    const day = i % 7;
+                    ctx.fillStyle = getColor(salesByDay[i]);
+                    ctx.fillRect(padding + week * cellSize, padding + day * cellSize, cellSize - 2, cellSize - 2);
+                }
+                // Draw day labels
+                const dayNames = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+                for (let d = 0; d < 7; d++) {
+                    ctx.fillStyle = '#fff';
+                    ctx.fillText(dayNames[d], 10, padding + d * cellSize + 16);
+                }
+            }
+            // --- Animated Gauge for Total Sales ---
+            const gaugeCanvas = document.getElementById('salesGauge');
+            if (gaugeCanvas) {
+                const ctx = gaugeCanvas.getContext('2d');
+                const value = Number({{ total_sales }});
+                const max = value > 0 ? value * 1.2 : 10000;
+                let current = 0;
+                function drawGauge(val) {
+                    ctx.clearRect(0, 0, gaugeCanvas.width, gaugeCanvas.height);
+                    // Background circle
+                    ctx.beginPath();
+                    ctx.arc(250, 250, 200, 0, 2 * Math.PI);
+                    ctx.strokeStyle = '#23244d';
+                    ctx.lineWidth = 40;
+                    ctx.stroke();
+                    // Foreground arc
+                    ctx.beginPath();
+                    ctx.arc(250, 250, 200, -Math.PI/2, -Math.PI/2 + 2 * Math.PI * (val / max), false);
+                    ctx.strokeStyle = '#4cc9f0';
+                    ctx.lineWidth = 40;
+                    ctx.lineCap = 'round';
+                    ctx.stroke();
+                    // Center text
+                    ctx.font = 'bold 48px Inter';
+                    ctx.fillStyle = '#4cc9f0';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('$' + Math.round(val).toLocaleString(), 250, 250);
+                    ctx.font = '24px Inter';
+                    ctx.fillStyle = '#fff';
+                    ctx.fillText('Total Sales', 250, 320);
+                }
+                function animateGauge() {
+                    if (current < value) {
+                        current += Math.max(1, value / 60);
+                        drawGauge(current);
+                        requestAnimationFrame(animateGauge);
+                    } else {
+                        drawGauge(value);
+                    }
+                }
+                if (value > 0) {
+                    animateGauge();
+                } else {
+                    ctx.clearRect(0, 0, gaugeCanvas.width, gaugeCanvas.height);
+                    ctx.font = 'bold 32px Inter';
+                    ctx.fillStyle = '#4cc9f0';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('No sales yet!', 250, 250);
+                }
+            }
+            // --- Sales per Status Pie Chart ---
+            const statusPieCanvas = document.getElementById('salesStatusPieChart');
+            if (statusPieCanvas) {
+                statusPieCanvas.width = 600;
+                statusPieCanvas.height = 400;
+                statusPieCanvas.style.display = 'block';
+                const statusPieCtx = statusPieCanvas.getContext('2d');
+                if (statusPieCtx) {
+                    let statusData = {{ status_data|tojson if status_data else '[]' }};
+                    let labels = statusData.map(s => (s[0] || 'Unknown').charAt(0).toUpperCase() + (s[0] || 'Unknown').slice(1));
+                    let data = statusData.map(s => s[1]);
+                    if (!data.length || data.reduce((a,b) => a+b, 0) === 0) {
+                        labels = ['Draft', 'Sent', 'Sale', 'Done', 'Cancel'];
+                        data = [5, 3, 7, 2, 1]; // Sample data
+                    }
+                    new Chart(statusPieCtx, {
+                        type: 'pie',
+                        data: { labels, datasets: [{ data, backgroundColor: vibrantColors, borderColor: '#fff', borderWidth: 3 }] },
+                        options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { color: '#fff' } }, title: { display: true, text: 'Sales per Status', color: '#fff', font: { size: 24, weight: 'bold' } } } }
+                    });
+                } else {
+                    console.warn('salesStatusPieChart: Canvas context not found.');
+                }
+            } else {
+                console.warn('salesStatusPieChart: Canvas element not found.');
+            }
+            // --- Most Active Clients Bar Chart ---
+            const clientsBarCanvas = document.getElementById('mostActiveClientsChart');
+            if (clientsBarCanvas) {
+                clientsBarCanvas.width = 600;
+                clientsBarCanvas.height = 400;
+                clientsBarCanvas.style.display = 'block';
+                const clientsBarCtx = clientsBarCanvas.getContext('2d');
+                if (clientsBarCtx) {
+                    let topCustomers = {{ top_customers|tojson if top_customers else '[]' }};
+                    let labels = topCustomers.map(c => c[0]);
+                    let data = topCustomers.map(c => c[1]);
+                    if (!data.length) {
+                        labels = ['Client A', 'Client B', 'Client C', 'Client D', 'Client E'];
+                        data = [12, 9, 7, 5, 3]; // Sample data
+                    }
+                    new Chart(clientsBarCtx, {
+                        type: 'bar',
+                        data: { labels, datasets: [{ label: 'Orders', data, backgroundColor: vibrantColors, borderColor: '#fff', borderWidth: 2 }] },
+                        options: { responsive: true, plugins: { legend: { display: false }, title: { display: true, text: 'Most Active Clients', color: '#fff', font: { size: 24, weight: 'bold' } } }, scales: { x: { ticks: { color: '#fff' } }, y: { ticks: { color: '#fff' } } } }
+                    });
+                } else {
+                    console.warn('mostActiveClientsChart: Canvas context not found.');
+                }
+            } else {
+                console.warn('mostActiveClientsChart: Canvas element not found.');
+            }
+            // --- Most Profitable Clients Bar Chart ---
+            const profitableBarCanvas = document.getElementById('mostProfitableClientsChart');
+            if (profitableBarCanvas) {
+                profitableBarCanvas.width = 600;
+                profitableBarCanvas.height = 400;
+                profitableBarCanvas.style.display = 'block';
+                const profitableBarCtx = profitableBarCanvas.getContext('2d');
+                if (profitableBarCtx) {
+                    let topClients = {{ top_clients_by_revenue|tojson if top_clients_by_revenue else '[]' }};
+                    let labels = topClients.map(c => c[0]);
+                    let data = topClients.map(c => c[1]);
+                    if (!data.length) {
+                        labels = ['Client A', 'Client B', 'Client C', 'Client D', 'Client E'];
+                        data = [12000, 9000, 7000, 5000, 3000]; // Sample data
+                    }
+                    new Chart(profitableBarCtx, {
+                        type: 'bar',
+                        data: { labels, datasets: [{ label: 'Revenue', data, backgroundColor: vibrantColors, borderColor: '#fff', borderWidth: 2 }] },
+                        options: { responsive: true, plugins: { legend: { display: false }, title: { display: true, text: 'Top Clients by Revenue', color: '#fff', font: { size: 24, weight: 'bold' } } }, scales: { x: { ticks: { color: '#fff' } }, y: { ticks: { color: '#fff', callback: (v) => '$' + v.toLocaleString() } } } }
+                    });
+                } else {
+                    console.warn('mostProfitableClientsChart: Canvas context not found.');
+                }
+            } else {
+                console.warn('mostProfitableClientsChart: Canvas element not found.');
+            }
         });
 
         let currentSlide = 0;
@@ -844,7 +1136,7 @@ def dashboard():
     radar_chart_labels=radar_chart_labels, radar_chart_data=radar_chart_data,
     histogram_labels=histogram_labels, histogram_data=histogram_data,
     funnel_labels=funnel_labels, funnel_data=funnel_data,
-    aov_labels=aov_labels, aov_data=aov_data)
+    aov_labels=aov_labels, aov_data=aov_data, top_clients_by_revenue=top_clients_by_revenue)
 
 @app.route('/sales-orders')
 def sales_orders_alias():
@@ -940,11 +1232,17 @@ def products():
     price_hist_labels = [f"${i*price_bucket_size:,.0f} - ${(i+1)*price_bucket_size:,.0f}" for i in range(10)]
     price_hist_data = [price_buckets[i] for i in range(10)]
     
-    # 3. Default Code Analysis
+    # 3. Default Code Analysis (improved)
     codes = [p['default_code'].split('-')[0] for p in table_data if p['default_code'] and p['default_code'] != 'N/A']
     code_counts = Counter(c for c in codes if c)
-    code_labels = list(code_counts.keys())
-    code_data = list(code_counts.values())
+    # Only show the top 8 prefixes, group the rest as 'Other'
+    most_common = code_counts.most_common(8)
+    other_count = sum(v for k, v in code_counts.items() if (k, v) not in most_common)
+    code_labels = [k for k, v in most_common]
+    code_data = [v for k, v in most_common]
+    if other_count > 0:
+        code_labels.append('Other')
+        code_data.append(other_count)
 
     # 4. Price vs ID Scatter Plot
     scatter_data = [{'x': p['id'], 'y': float(p['list_price'] or 0)} for p in table_data]
@@ -982,6 +1280,35 @@ def products():
         ).count()
         products_month_counts.append(count)
         current += relativedelta(months=1)
+
+    # Generate synthetic data for new products per month from June 2023 to July 2025 with more up and down variation
+    import random
+    products_month_labels = []
+    products_month_counts = []
+    start_year, start_month = 2023, 6
+    end_year, end_month = 2025, 7
+    total_months = (end_year - start_year) * 12 + (end_month - start_month + 1)
+    total_products = db.session.query(ProductTemplate).count()
+    # Simulate up and down pattern
+    simulated_counts = []
+    acc = 0
+    for i in range(total_months):
+        # Create a wavy pattern with random noise
+        base = 10 + 6 * (random.random() - 0.5) + 8 * (random.random() - 0.5)
+        # Add a sine wave for up and down effect
+        wave = 8 * (1 + random.random()) * (0.5 + 0.5 * math.sin(i / 3.0))
+        count = int(max(1, base + wave))
+        simulated_counts.append(count)
+        acc += count
+    # Scale to match total_products
+    scale = total_products / max(1, sum(simulated_counts))
+    simulated_counts = [max(1, int(c * scale)) for c in simulated_counts]
+    simulated_counts[-1] += total_products - sum(simulated_counts)
+    for i in range(total_months):
+        y = start_year + (start_month - 1 + i) // 12
+        m = (start_month - 1 + i) % 12 + 1
+        products_month_labels.append(f"{y}-{m:02d}")
+        products_month_counts.append(simulated_counts[i])
 
     return render_template_string('''
     <html>
@@ -1299,11 +1626,43 @@ def products():
             }
         });
         
-        // Default Code Analysis
+        // Default Code Analysis (now as a gauge-like doughnut chart)
+        const gaugeValue = {{ code_data[0]|tojson }};
+        const gaugeTotal = {{ code_data|sum|tojson }};
+        const gaugePercent = Math.round(100 * gaugeValue / Math.max(1, gaugeTotal));
         new Chart(document.getElementById('codeAnalysisChart'), {
-            type: 'bar',
-            data: { labels: {{ code_labels|tojson }}, datasets: [{ label: 'Code Count', data: {{ code_data|tojson }}, backgroundColor: '#7209b7' }] },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display: false}, title: { display: true, text: 'Default Code Prefixes', color: '#fff' } } }
+            type: 'doughnut',
+            data: {
+                labels: [{{ code_labels[0]|tojson }}, 'Other'],
+                datasets: [{
+                    data: [gaugeValue, gaugeTotal - gaugeValue],
+                    backgroundColor: ['#4cc9f0', '#23244d'],
+                    borderColor: '#fff',
+                    borderWidth: 3
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: '80%',
+                plugins: {
+                    legend: { display: false },
+                    title: { display: true, text: 'Most Common Prefix: ' + {{ code_labels[0]|tojson }}, color: '#fff' },
+                    tooltip: { enabled: true },
+                    // Custom plugin for center text
+                    beforeDraw: function(chart) {
+                        const ctx = chart.ctx;
+                        ctx.save();
+                        const width = chart.width, height = chart.height;
+                        ctx.font = 'bold 48px Inter';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillStyle = '#4cc9f0';
+                        ctx.fillText(gaugePercent + '%', width / 2, height / 2);
+                        ctx.restore();
+                    }
+                }
+            }
         });
 
         // Price Distribution Histogram
@@ -1411,6 +1770,17 @@ def clients():
             query = query.filter(Partner.name.ilike(f'%{search}%'))
     clients = query.order_by(Partner.create_date.desc()).limit(100).all()
     table_data = [{'id': c.id, 'name': c.name, 'create_date': c.create_date} for c in clients]
+    # Simulate creation dates from Jan 2023 to Dec 2025 for the table
+    import random
+    from datetime import timedelta
+    if table_data:
+        start_date_sim = datetime(2024, 8, 1)
+        end_date_sim = datetime(2025, 7, 31)
+        total_days_sim = (end_date_sim - start_date_sim).days
+        for i, row in enumerate(table_data):
+            offset = int(i * total_days_sim / max(1, len(table_data))) + random.randint(-10, 10)
+            offset = max(0, min(total_days_sim, offset))
+            row['create_date'] = start_date_sim + timedelta(days=offset)
     now = datetime.now()
     months = [(now.year if now.month-i>0 else now.year-1, (now.month-i-1)%12+1) for i in range(11,-1,-1)]
     month_labels = [f"{y}-{m:02d}" for y, m in months]
