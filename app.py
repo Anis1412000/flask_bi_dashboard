@@ -7,6 +7,7 @@ from io import StringIO
 import csv
 import random
 import re
+from dateutil.relativedelta import relativedelta
 
 app = Flask(__name__)
 
@@ -39,6 +40,7 @@ class ProductTemplate(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String)
     list_price = db.Column(db.Numeric)
+    create_date = db.Column(db.DateTime)  # <-- This is required!
     # Add more fields if needed
 
 class Product(db.Model):
@@ -114,7 +116,8 @@ def dashboard():
     ).filter(SaleOrder.date_order.between(start_date, end_date)).group_by(extract('isodow', SaleOrder.date_order)).all()
     sales_by_day = {day: 0.0 for day in days}
     for day_num, total in sales_by_day_q:
-        if day_num and total: sales_by_day[days[day_num - 1]] = float(total)
+        if day_num and total:
+            sales_by_day[days[int(day_num) - 1]] = float(total)
     radar_chart_labels = list(sales_by_day.keys())
     radar_chart_data = list(sales_by_day.values())
 
@@ -210,6 +213,7 @@ def dashboard():
             font-weight: 700;
             margin: 0;
             letter-spacing: -1px;
+            user-select: text;
         }
         .date-filter {
             display: flex;
@@ -264,6 +268,12 @@ def dashboard():
             transform: translateY(-3px) scale(1.02);
             box-shadow: 0 8px 32px rgba(67, 97, 238, 0.13);
         }
+        .kpi-card > div:first-child,
+        .kpi-value,
+        .kpi-card > div:last-child,
+        th {
+            user-select: text;
+        }
         .kpi-card > div:first-child {
             font-size: 1.1rem;
             color: var(--secondary);
@@ -299,6 +309,7 @@ def dashboard():
             font-size: 1.2rem;
             font-weight: 600;
             margin-bottom: 18px;
+            user-select: text;
         }
         table {
             width: 100%;
@@ -373,6 +384,67 @@ def dashboard():
             .navbar { font-size: 0.98rem; }
             .navbar a { padding: 0 12px; }
         }
+        .chart-container {
+            min-height: 500px;
+            border: 4px solid #4361ee;
+            border-radius: 18px;
+            box-shadow: 0 8px 32px rgba(67,97,238,0.13);
+            background: #23244d;
+            margin-bottom: 32px;
+            padding: 32px 24px 24px 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        canvas { max-width: 100%; width: 1000px !important; height: 700px !important; }
+        .chart-slider-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 32px 0 48px 0;
+        }
+        .slider-arrow {
+            background: linear-gradient(90deg,#4361ee,#f72585);
+            color: #fff;
+            border: none;
+            border-radius: 50%;
+            width: 48px;
+            height: 48px;
+            font-size: 2rem;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 0 18px;
+            box-shadow: 0 2px 8px #4cc9f0;
+            transition: background 0.2s;
+        }
+        .slider-arrow:hover {
+            background: linear-gradient(90deg,#f72585,#4361ee);
+        }
+        .chart-slider {
+            width: 650px;
+            height: 380px;
+            overflow: hidden;
+            position: relative;
+            display: flex;
+        }
+        .slide {
+            min-width: 100%;
+            transition: transform 0.5s cubic-bezier(.77,0,.18,1);
+            display: none;
+            justify-content: center;
+            align-items: center;
+        }
+        .slide.active {
+            display: flex;
+        }
+        .chart-slider canvas {
+            width: 600px !important;
+            height: 340px !important;
+            background: #23244d;
+            border-radius: 18px;
+            box-shadow: 0 8px 32px rgba(67,97,238,0.13);
+            border: 2px solid #fff;
+        }
     </style>
 </head>
 <body>
@@ -415,42 +487,20 @@ def dashboard():
         </div>
     </div>
 
-    <!-- Charts Row 1 -->
-    <div class="chart-row">
-        <div class="chart-card">
-            <canvas id="trendChart"></canvas>
+    <!-- Chart Gallery Slider -->
+    <div class="chart-slider-container">
+        <button class="slider-arrow left" onclick="prevSlide()">&#8592;</button>
+        <div class="chart-slider">
+            <div class="slide"><canvas id="trendChart"></canvas></div>
+            <div class="slide"><canvas id="statusChart"></canvas></div>
+            <div class="slide"><canvas id="customersChart"></canvas></div>
+            <div class="slide"><canvas id="revenueChart"></canvas></div>
+            <div class="slide"><canvas id="salesByDayChart"></canvas></div>
+            <div class="slide"><canvas id="orderValueHistogram"></canvas></div>
+            <div class="slide"><canvas id="salesFunnelChart"></canvas></div>
+            <div class="slide"><canvas id="aovTrendChart"></canvas></div>
         </div>
-        <div class="chart-card">
-            <canvas id="statusChart"></canvas>
-        </div>
-    </div>
-
-    <!-- Charts Row 2 -->
-    <div class="chart-row">
-        <div class="chart-card">
-            <canvas id="customersChart"></canvas>
-        </div>
-        <div class="chart-card">
-            <canvas id="revenueChart"></canvas>
-        </div>
-    </div>
-
-    <!-- New Charts Row -->
-    <div class="chart-row" style="margin-top: 28px;">
-        <div class="chart-card">
-            <canvas id="salesByDayChart"></canvas>
-        </div>
-        <div class="chart-card">
-            <canvas id="orderValueHistogram"></canvas>
-        </div>
-    </div>
-    <div class="chart-row" style="margin-top: 28px;">
-        <div class="chart-card">
-            <canvas id="salesFunnelChart"></canvas>
-        </div>
-        <div class="chart-card">
-            <canvas id="aovTrendChart"></canvas>
-        </div>
+        <button class="slider-arrow right" onclick="nextSlide()">&#8594;</button>
     </div>
 
     <!-- Recent Orders Table -->
@@ -695,21 +745,94 @@ def dashboard():
             });
 
             // 4. AOV Trend Chart
-            new Chart(document.getElementById('aovTrendChart'), {
+            const aovCanvas = document.getElementById('aovTrendChart');
+            // Make canvas high-res for crispness
+            function makeHiDPICanvas(canvas, w, h, ratio) {
+                if (!ratio) { ratio = window.devicePixelRatio || 1; }
+                canvas.width = w * ratio;
+                canvas.height = h * ratio;
+                canvas.style.width = w + 'px';
+                canvas.style.height = h + 'px';
+                const ctx = canvas.getContext('2d');
+                ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+                return ctx;
+            }
+            makeHiDPICanvas(aovCanvas, 600, 340);
+            const aovCtx = aovCanvas.getContext('2d');
+            // Thermic gradient for line
+            const thermicGradient = aovCtx.createLinearGradient(0, 0, 600, 0);
+            thermicGradient.addColorStop(0, '#f72585'); // hot pink
+            thermicGradient.addColorStop(0.25, '#f8961e'); // orange
+            thermicGradient.addColorStop(0.5, '#fee440'); // yellow
+            thermicGradient.addColorStop(0.75, '#43aa8b'); // teal
+            thermicGradient.addColorStop(1, '#4361ee'); // blue
+            new Chart(aovCanvas, {
                 type: 'line',
                 data: {
                     labels: {{ aov_labels|tojson }},
                     datasets: [{
                         label: 'Average Order Value ($)',
                         data: {{ aov_data|tojson }},
-                        borderColor: '#43aa8b',
-                        tension: 0.3,
+                        borderColor: '#fff',
+                        borderWidth: 4,
+                        pointBackgroundColor: thermicGradient,
+                        pointBorderColor: '#fff',
+                        pointRadius: 8,
+                        pointHoverRadius: 14,
+                        backgroundColor: thermicGradient,
                         fill: true,
-                        backgroundColor: 'rgba(67, 170, 139, 0.1)'
+                        tension: 0.45,
+                        shadowOffsetX: 0,
+                        shadowOffsetY: 4,
+                        shadowBlur: 16,
+                        shadowColor: 'rgba(67,97,238,0.18)'
                     }]
                 },
-                options: { responsive: true, plugins: { title: { display: true, text: 'Monthly Average Order Value Trend' } } }
+                options: {
+                    responsive: false,
+                    plugins: {
+                        legend: { display: true, labels: { color: '#fff', font: { size: 16, family: 'Inter' } } },
+                        title: { display: true, text: 'Monthly Average Order Value Trend', color: '#fff', font: { size: 22, weight: 'bold', family: 'Inter' } },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => '$' + ctx.raw.toLocaleString()
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' },
+                            ticks: { color: '#fff', font: { size: 14, family: 'Inter' } }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' },
+                            ticks: { color: '#fff', font: { size: 14, family: 'Inter' }, callback: (value) => '$' + value.toLocaleString() }
+                        }
+                    }
+                }
             });
+        });
+
+        let currentSlide = 0;
+        function showSlide(idx) {
+            const slides = document.querySelectorAll('.chart-slider .slide');
+            if (!slides.length) return;
+            slides.forEach((slide, i) => {
+                slide.classList.toggle('active', i === idx);
+            });
+        }
+        function prevSlide() {
+            const slides = document.querySelectorAll('.chart-slider .slide');
+            currentSlide = (currentSlide - 1 + slides.length) % slides.length;
+            showSlide(currentSlide);
+        }
+        function nextSlide() {
+            const slides = document.querySelectorAll('.chart-slider .slide');
+            currentSlide = (currentSlide + 1) % slides.length;
+            showSlide(currentSlide);
+        }
+        document.addEventListener('DOMContentLoaded', function() {
+            showSlide(currentSlide);
         });
     </script>
 </body>
@@ -797,9 +920,8 @@ def products():
     hbar_data = bar_data
     
     # Data for Price Distribution line chart
-    sorted_products = sorted(table_data, key=lambda x: x['list_price'] or 0)
-    line_chart_products = sorted_products[:15]  # Limit to 15 products for clarity
-
+    sorted_products = sorted(table_data, key=lambda x: x['list_price'] or 0, reverse=True)[:10]  # Top 10 by price
+    line_chart_products = sorted_products
     line_labels = [(p['name'][:15] + '…' if len(p['name']) > 15 else p['name']) for p in line_chart_products]
     line_data = [float(p['list_price'] or 0) for p in line_chart_products]
     full_line_labels = [p['name'] for p in line_chart_products] # For tooltips
@@ -835,6 +957,32 @@ def products():
         writer.writerows(table_data)
         output = si.getvalue()
         return output, 200, {'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename=products.csv'}
+
+    # Parse date filters from request
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    if start_date_str:
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+    else:
+        start_date = datetime.now() - relativedelta(months=11)
+    if end_date_str:
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+    else:
+        end_date = datetime.now()
+    # Generate list of months between start_date and end_date
+    products_month_labels = []
+    products_month_counts = []
+    current = start_date.replace(day=1)
+    while current <= end_date:
+        label = current.strftime('%Y-%m')
+        products_month_labels.append(label)
+        count = db.session.query(ProductTemplate).filter(
+            db.extract('year', ProductTemplate.create_date)==current.year,
+            db.extract('month', ProductTemplate.create_date)==current.month
+        ).count()
+        products_month_counts.append(count)
+        current += relativedelta(months=1)
+
     return render_template_string('''
     <html>
     <head>
@@ -866,17 +1014,89 @@ def products():
                 <button type="submit">Search</button>
                 <a href="?export=csv&search={{ request.args.get('search', '') }}" class="export-btn">Export CSV</a>
             </form>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 32px; width: 100%;">
-                <div class="chart-container"><canvas id="barChart"></canvas></div>
-                <div class="chart-container"><canvas id="pieChart"></canvas></div>
-                <div class="chart-container"><canvas id="hbarChart"></canvas></div>
-                <div class="chart-container"><canvas id="doughnutChart"></canvas></div>
-                <div class="chart-container chart-span-2"><canvas id="lineChart"></canvas></div>
-                <div class="chart-container"><canvas id="wordCloudChart"></canvas></div>
-                <div class="chart-container"><canvas id="priceHistogramChart"></canvas></div>
-                <div class="chart-container"><canvas id="codeAnalysisChart"></canvas></div>
-                <div class="chart-container chart-span-2"><canvas id="scatterChart"></canvas></div>
+            <div style="display: flex; flex-direction: column; align-items: center; width: 100%;">
+                <!-- Chart Gallery Slider for Products Page -->
+                <div class="chart-slider-container">
+                    <button class="slider-arrow left" onclick="prevSlideProducts()">&#8592;</button>
+                    <div class="chart-slider" id="products-slider">
+                        <div class="slide"><canvas id="barChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="pieChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="hbarChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="doughnutChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="lineChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="priceHistogramChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="codeAnalysisChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="scatterChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="productsLineChart" style="width:1200px; height:600px;"></canvas></div>
+                    </div>
+                    <button class="slider-arrow right" onclick="nextSlideProducts()">&#8594;</button>
+                </div>
             </div>
+            <style>
+                .chart-slider-container {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    margin: 32px 0 48px 0;
+                }
+                .slider-arrow {
+                    background: linear-gradient(90deg,#4361ee,#f72585);
+                    color: #fff;
+                    border: none;
+                    border-radius: 50%;
+                    width: 48px;
+                    height: 48px;
+                    font-size: 2rem;
+                    font-weight: bold;
+                    cursor: pointer;
+                    margin: 0 18px;
+                    box-shadow: 0 2px 8px #4cc9f0;
+                    transition: background 0.2s;
+                }
+                .slider-arrow:hover {
+                    background: linear-gradient(90deg,#f72585,#4361ee);
+                }
+                .chart-slider {
+                    width: 1200px;
+                    height: 600px;
+                    overflow: hidden;
+                    position: relative;
+                    display: flex;
+                }
+                .slide {
+                    min-width: 100%;
+                    transition: transform 0.5s cubic-bezier(.77,0,.18,1);
+                    display: none;
+                    justify-content: center;
+                    align-items: center;
+                }
+                .slide.active {
+                    display: flex;
+                }
+            </style>
+            <script>
+                let currentSlideProducts = 0;
+                function showSlideProducts(idx) {
+                    const slides = document.querySelectorAll('#products-slider .slide');
+                    if (!slides.length) return;
+                    slides.forEach((slide, i) => {
+                        slide.classList.toggle('active', i === idx);
+                    });
+                }
+                function prevSlideProducts() {
+                    const slides = document.querySelectorAll('#products-slider .slide');
+                    currentSlideProducts = (currentSlideProducts - 1 + slides.length) % slides.length;
+                    showSlideProducts(currentSlideProducts);
+                }
+                function nextSlideProducts() {
+                    const slides = document.querySelectorAll('#products-slider .slide');
+                    currentSlideProducts = (currentSlideProducts + 1) % slides.length;
+                    showSlideProducts(currentSlideProducts);
+                }
+                document.addEventListener('DOMContentLoaded', function() {
+                    showSlideProducts(currentSlideProducts);
+                });
+            </script>
             <table style="margin-top: 32px;">
                 <thead><tr><th>ID</th><th>Name</th><th>Default Code</th><th>List Price</th></tr></thead>
                 <tbody>
@@ -896,8 +1116,11 @@ def products():
             '#4cc9f0','#4361ee','#f72585','#f8961e','#3a0ca3','#b5179e','#7209b7','#4895ef','#00b4d8','#43aa8b','#f9c74f','#f3722c','#577590','#ff006e','#8338ec','#3a86ff'
         ];
         // Bar Chart with gradient, white border, rounded bars, and drop shadow
-        const barCtx = document.getElementById('barChart').getContext('2d');
-        const barGradient = barCtx.createLinearGradient(0, 0, 0, 340);
+        const barCanvas = document.getElementById('barChart');
+        barCanvas.width = 1200;
+        barCanvas.height = 600;
+        const barCtx = barCanvas.getContext('2d');
+        const barGradient = barCtx.createLinearGradient(0, 0, 0, 600);
         barGradient.addColorStop(0, '#4cc9f0');
         barGradient.addColorStop(1, '#4361ee');
         new Chart(barCtx, {
@@ -909,35 +1132,25 @@ def products():
                     data: {{ bar_data|tojson }},
                     backgroundColor: barGradient,
                     borderColor: '#fff',
-                    borderWidth: 3,
-                    borderRadius: 12,
-                    hoverBackgroundColor: '#f72585',
-                    shadowOffsetX: 2,
-                    shadowOffsetY: 2,
-                    shadowBlur: 8,
-                    shadowColor: 'rgba(255,255,255,0.2)'
+                    borderWidth: 6,
+                    borderRadius: 20
                 }]
             },
             options: {
                 responsive: false,
+                maintainAspectRatio: false,
                 plugins: {
                     legend: { display: false },
-                    title: { display: true, text: 'Top 10 Products by Price', color: '#fff', font: { size: 22, weight: 'bold', family: 'Inter' } }
+                    title: { display: true, text: 'Top 10 Products by Price', color: '#fff', font: { size: 40, weight: 'bold', family: 'Inter' } }
                 },
                 scales: {
-                    x: {
-                        grid: { color: '#fff', borderColor: '#fff' },
-                        ticks: { color: '#fff', font: { size: 14, family: 'Inter' } }
-                    },
-                    y: {
-                        grid: { color: '#fff', borderColor: '#fff' },
-                        ticks: { color: '#fff', font: { size: 14, family: 'Inter' } }
-                    }
+                    x: { grid: { color: '#fff' }, ticks: { color: '#fff', font: { size: 24 } } },
+                    y: { grid: { color: '#fff' }, ticks: { color: '#fff', font: { size: 24 } } }
                 }
             }
         });
 
-        // Pie Chart with white border and drop shadow
+        // Pie Chart
         new Chart(document.getElementById('pieChart'), {
             type: 'pie',
             data: {
@@ -957,7 +1170,7 @@ def products():
             options: { responsive: false, plugins: { legend: { position: 'bottom', labels: { color: '#fff', font: { size: 14, family: 'Inter' } } }, title: { display: true, text: 'Products by Price Range', color: '#fff', font: { size: 22, weight: 'bold', family: 'Inter' } } } }
         });
 
-        // Horizontal Bar Chart with white border, rounded bars, and drop shadow
+        // Horizontal Bar Chart
         const hbarCtx = document.getElementById('hbarChart').getContext('2d');
         const hbarGradient = hbarCtx.createLinearGradient(0, 0, 340, 0);
         hbarGradient.addColorStop(0, '#f72585');
@@ -995,7 +1208,7 @@ def products():
             }
         });
 
-        // Doughnut Chart with white border and drop shadow
+        // Doughnut Chart
         new Chart(document.getElementById('doughnutChart'), {
             type: 'doughnut',
             data: {
@@ -1015,12 +1228,8 @@ def products():
             options: { responsive: false, plugins: { legend: { position: 'bottom', labels: { color: '#fff', font: { size: 14, family: 'Inter' } } }, title: { display: true, text: 'Products by Price Bracket', color: '#fff', font: { size: 22, weight: 'bold', family: 'Inter' } } } }
         });
 
-        // Line Chart with white border, drop shadow, and creative style
-        const lineCtx = document.getElementById('lineChart').getContext('2d');
-        const lineGradient = lineCtx.createLinearGradient(0, 0, 0, 340);
-        lineGradient.addColorStop(0, '#f72585');
-        lineGradient.addColorStop(1, '#4cc9f0');
-        new Chart(lineCtx, {
+        // Line Chart
+        new Chart(document.getElementById('lineChart'), {
             type: 'line',
             data: {
                 labels: {{ line_labels|tojson }},
@@ -1029,21 +1238,18 @@ def products():
                     data: {{ line_data|tojson }},
                     borderColor: '#fff',
                     borderWidth: 4,
-                    backgroundColor: lineGradient,
-                    pointBackgroundColor: '#fff',
-                    pointBorderColor: '#f72585',
-                    pointRadius: 6,
-                    pointHoverRadius: 10,
+                    backgroundColor: 'linear-gradient(90deg, #f72585, #fee440, #43aa8b, #4361ee)',
+                    pointBackgroundColor: '#f72585',
+                    pointBorderColor: '#fff',
+                    pointRadius: 10,
+                    pointHoverRadius: 16,
                     fill: true,
-                    tension: 0.4,
-                    shadowOffsetX: 2,
-                    shadowOffsetY: 2,
-                    shadowBlur: 8,
-                    shadowColor: 'rgba(255,255,255,0.2)'
+                    tension: 0.45
                 }]
             },
             options: {
                 responsive: false,
+                maintainAspectRatio: false,
                 plugins: {
                     tooltip: {
                         callbacks: {
@@ -1053,47 +1259,20 @@ def products():
                             }
                         }
                     },
-                    legend: { display: true, labels: { color: '#fff', font: { size: 16, family: 'Inter' } } },
-                    title: { display: true, text: 'Product Price Distribution', color: '#fff', font: { size: 22, weight: 'bold', family: 'Inter' } }
+                    legend: { display: true, labels: { color: '#fff', font: { size: 24, family: 'Inter' } } },
+                    title: { display: true, text: 'Product Price Distribution', color: '#fff', font: { size: 36, weight: 'bold', family: 'Inter' } }
                 },
                 scales: {
                     x: {
                         grid: { color: '#fff', borderColor: '#fff' },
-                        ticks: {
-                            color: '#fff',
-                            font: { size: 12, family: 'Inter' },
-                            maxRotation: 90,
-                            minRotation: 90
-                        }
+                        ticks: { color: '#fff', font: { size: 28, family: 'Inter' }, maxRotation: 90, minRotation: 90 }
                     },
                     y: {
                         grid: { color: '#fff', borderColor: '#fff' },
-                        ticks: { color: '#fff', font: { size: 14, family: 'Inter' } }
+                        ticks: { color: '#fff', font: { size: 28, family: 'Inter' } }
                     }
                 }
             }
-        });
-
-        // --- NEW CHARTS ---
-        // Word Cloud
-        new Chart(document.getElementById('wordCloudChart'), {
-            type: 'bubble',
-            data: { datasets: [{ label: 'Product Keywords', data: {{ word_cloud_data|tojson }}, backgroundColor: vibrantColors }] },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display: false}, title: { display: true, text: 'Product Name Word Cloud', color: '#fff' } } }
-        });
-
-        // Price Histogram
-        new Chart(document.getElementById('priceHistogramChart'), {
-            type: 'bar',
-            data: { labels: {{ price_hist_labels|tojson }}, datasets: [{ label: 'Number of Products', data: {{ price_hist_data|tojson }}, backgroundColor: '#f8961e' }] },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display: false}, title: { display: true, text: 'Product Price Histogram', color: '#fff' } } }
-        });
-        
-        // Default Code Analysis
-        new Chart(document.getElementById('codeAnalysisChart'), {
-            type: 'bar',
-            data: { labels: {{ code_labels|tojson }}, datasets: [{ label: 'Code Count', data: {{ code_data|tojson }}, backgroundColor: '#7209b7' }] },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display: false}, title: { display: true, text: 'Default Code Prefixes', color: '#fff' } } }
         });
 
         // Scatter Plot
@@ -1119,11 +1298,82 @@ def products():
                 }
             }
         });
+        
+        // Default Code Analysis
+        new Chart(document.getElementById('codeAnalysisChart'), {
+            type: 'bar',
+            data: { labels: {{ code_labels|tojson }}, datasets: [{ label: 'Code Count', data: {{ code_data|tojson }}, backgroundColor: '#7209b7' }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display: false}, title: { display: true, text: 'Default Code Prefixes', color: '#fff' } } }
+        });
+
+        // Price Distribution Histogram
+        const priceHistCanvas = document.getElementById('priceHistogramChart');
+        priceHistCanvas.width = 1200;
+        priceHistCanvas.height = 600;
+        const priceHistCtx = priceHistCanvas.getContext('2d');
+        const histGradient = priceHistCtx.createLinearGradient(0, 0, 1200, 0);
+        histGradient.addColorStop(0, '#43aa8b');
+        histGradient.addColorStop(0.5, '#fee440');
+        histGradient.addColorStop(1, '#f72585');
+        new Chart(priceHistCanvas, {
+            type: 'bar',
+            data: { labels: {{ price_hist_labels|tojson }}, datasets: [{ label: 'Number of Products', data: {{ price_hist_data|tojson }}, backgroundColor: histGradient, borderColor: '#fff', borderWidth: 6, borderRadius: 20 }] },
+            options: {
+                responsive: false,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {display: false},
+                    title: { display: true, text: 'Product Price Distribution', color: '#fff', font: { size: 40, weight: 'bold' } }
+                },
+                scales: {
+                    x: { grid: { color: '#fff' }, ticks: { color: '#fff', font: { size: 24 } } },
+                    y: { grid: { color: '#fff' }, ticks: { color: '#fff', font: { size: 24 } } }
+                }
+            }
+        });
+
+        const productsLineCanvas = document.getElementById('productsLineChart');
+        productsLineCanvas.width = 1200;
+        productsLineCanvas.height = 600;
+        const productsLineCtx = productsLineCanvas.getContext('2d');
+        const productsLineGradient = productsLineCtx.createLinearGradient(0, 0, 0, 600);
+        productsLineGradient.addColorStop(0, '#f72585');
+        productsLineGradient.addColorStop(1, '#fff');
+        new Chart(productsLineCanvas, {
+            type: 'line',
+            data: {
+                labels: {{ products_month_labels|tojson }},
+                datasets: [{
+                    label: 'New Products',
+                    data: {{ products_month_counts|tojson }},
+                    borderColor: '#fff',
+                    borderWidth: 4,
+                    backgroundColor: productsLineGradient,
+                    pointBackgroundColor: '#fff',
+                    pointBorderColor: '#f72585',
+                    pointRadius: 8,
+                    pointHoverRadius: 14,
+                    fill: true,
+                    tension: 0.45
+                }]
+            },
+            options: {
+                responsive: false,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: true, labels: { color: '#fff', font: { size: 24 } } },
+                    title: { display: true, text: 'New Products per Month', color: '#fff', font: { size: 40, weight: 'bold' } }
+                },
+                scales: {
+                    x: { grid: { color: '#fff' }, ticks: { color: '#fff', font: { size: 24 } } },
+                    y: { grid: { color: '#fff' }, ticks: { color: '#fff', font: { size: 24 } } }
+                }
+            }
+        });
         </script>
     </body>
     </html>
-    ''', table_data=table_data, bar_labels=bar_labels, bar_data=bar_data, price_ranges=price_ranges, hbar_labels=hbar_labels, hbar_data=hbar_data, doughnut_labels=doughnut_labels, doughnut_data=doughnut_data, line_labels=line_labels, line_data=line_data, full_line_labels=full_line_labels, request=request,
-    word_cloud_data=word_cloud_data, price_hist_labels=price_hist_labels, price_hist_data=price_hist_data, code_labels=code_labels, code_data=code_data, scatter_data=scatter_data)
+    ''', table_data=table_data, bar_labels=bar_labels, bar_data=bar_data, price_ranges=price_ranges, hbar_labels=hbar_labels, hbar_data=hbar_data, doughnut_labels=doughnut_labels, doughnut_data=doughnut_data, line_labels=line_labels, line_data=line_data, full_line_labels=full_line_labels, request=request, word_cloud_data=word_cloud_data, price_hist_labels=price_hist_labels, price_hist_data=price_hist_data, code_labels=code_labels, code_data=code_data, scatter_data=scatter_data, products_month_labels=products_month_labels, products_month_counts=products_month_counts)
 
 @app.route('/clients', methods=['GET'])
 def clients():
@@ -1254,24 +1504,93 @@ def clients():
                 <button type="submit">Search</button>
                 <a href="?export=csv&search={{ request.args.get('search', '') }}" class="export-btn">Export CSV</a>
             </form>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 32px; width: 100%;">
-                <div class="chart-container"><canvas id="lineChart"></canvas></div>
-                <div class="chart-container"><canvas id="pieChart"></canvas></div>
-                <div class="chart-container"><canvas id="hbarChart"></canvas></div>
-                <div class="chart-container"><canvas id="polarAreaChart"></canvas></div>
-                <div class="chart-container chart-span-2"><canvas id="heatmapChart"></canvas></div>
-                <div class="chart-container"><canvas id="clientWordCloudChart"></canvas></div>
-                <div class="chart-container"><canvas id="timeDiffHistogram"></canvas></div>
-                <div style="flex:2; min-width:420px; overflow-x: auto; grid-column: 1 / -1;">
-                    <table style="margin-top: 32px;">
-                        <thead><tr><th>ID</th><th>Name</th><th>Created</th></tr></thead>
-                        <tbody>
-                        {% for row in table_data %}
-                            <tr><td>{{ row.id }}</td><td>{{ row.name }}</td><td>{{ row.create_date.strftime('%Y-%m-%d') if row.create_date else '' }}</td></tr>
-                        {% endfor %}
-                        </tbody>
-                    </table>
+            <div style="display: flex; flex-direction: column; align-items: center; width: 100%;">
+                <!-- Chart Gallery Slider for Clients Page -->
+                <div class="chart-slider-container">
+                    <button class="slider-arrow left" onclick="prevSlideClients()">&#8592;</button>
+                    <div class="chart-slider" id="clients-slider">
+                        <div class="slide"><canvas id="lineChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="pieChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="hbarChart" style="width:1200px; height:600px;"></canvas></div>
+                        <div class="slide"><canvas id="polarAreaChart" style="width:1200px; height:600px;"></canvas></div>
+                    </div>
+                    <button class="slider-arrow right" onclick="nextSlideClients()">&#8594;</button>
                 </div>
+            </div>
+            <style>
+                .chart-slider-container {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    margin: 32px 0 48px 0;
+                }
+                .slider-arrow {
+                    background: linear-gradient(90deg,#4361ee,#f72585);
+                    color: #fff;
+                    border: none;
+                    border-radius: 50%;
+                    width: 48px;
+                    height: 48px;
+                    font-size: 2rem;
+                    font-weight: bold;
+                    cursor: pointer;
+                    margin: 0 18px;
+                    box-shadow: 0 2px 8px #4cc9f0;
+                    transition: background 0.2s;
+                }
+                .slider-arrow:hover {
+                    background: linear-gradient(90deg,#f72585,#4361ee);
+                }
+                .chart-slider {
+                    width: 1200px;
+                    height: 600px;
+                    overflow: hidden;
+                    position: relative;
+                    display: flex;
+                }
+                .slide {
+                    min-width: 100%;
+                    transition: transform 0.5s cubic-bezier(.77,0,.18,1);
+                    display: none;
+                    justify-content: center;
+                    align-items: center;
+                }
+                .slide.active {
+                    display: flex;
+                }
+            </style>
+            <script>
+                let currentSlideClients = 0;
+                function showSlideClients(idx) {
+                    const slides = document.querySelectorAll('#clients-slider .slide');
+                    if (!slides.length) return;
+                    slides.forEach((slide, i) => {
+                        slide.classList.toggle('active', i === idx);
+                    });
+                }
+                function prevSlideClients() {
+                    const slides = document.querySelectorAll('#clients-slider .slide');
+                    currentSlideClients = (currentSlideClients - 1 + slides.length) % slides.length;
+                    showSlideClients(currentSlideClients);
+                }
+                function nextSlideClients() {
+                    const slides = document.querySelectorAll('#clients-slider .slide');
+                    currentSlideClients = (currentSlideClients + 1) % slides.length;
+                    showSlideClients(currentSlideClients);
+                }
+                document.addEventListener('DOMContentLoaded', function() {
+                    showSlideClients(currentSlideClients);
+                });
+            </script>
+            <div style="flex:2; min-width:420px; overflow-x: auto; grid-column: 1 / -1;">
+                <table style="margin-top: 32px;">
+                    <thead><tr><th>ID</th><th>Name</th><th>Created</th></tr></thead>
+                    <tbody>
+                    {% for row in table_data %}
+                        <tr><td>{{ row.id }}</td><td>{{ row.name }}</td><td>{{ row.create_date.strftime('%Y-%m-%d') if row.create_date else '' }}</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
             </div>
         </div>
         <script>
@@ -1305,12 +1624,9 @@ def clients():
                 responsive: false,
                 plugins: {
                     legend: { display: true, labels: { color: '#fff', font: { size: 16 } } },
-                    title: { display: true, text: 'New Clients per Month', color: '#fff', font: { size: 22, weight: 'bold' } }
+                    title: { display: true, text: 'New Clients per Month', color: '#fff', font: { size: 40, weight: 'bold' } }
                 },
-                scales: {
-                    x: { grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff', font: { size: 14 } } },
-                    y: { grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff', font: { size: 14 } } }
-                }
+                scales: { x: { grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff', font: { size: 24 } } }, y: { grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff', font: { size: 24 } } } }
             }
         });
         // Horizontal Bar Chart
@@ -1336,12 +1652,9 @@ def clients():
                 responsive: false,
                 plugins: {
                     legend: { display: false },
-                    title: { display: true, text: 'Top 10 Clients by Order Count', color: '#fff', font: { size: 22, weight: 'bold' } }
+                    title: { display: true, text: 'Top 10 Clients by Order Count', color: '#fff', font: { size: 40, weight: 'bold' } }
                 },
-                scales: {
-                    x: { grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff', font: { size: 14 } } },
-                    y: { grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff', font: { size: 14 } } }
-                }
+                scales: { x: { grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff', font: { size: 24 } } }, y: { grid: { color: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff', font: { size: 24 } } } }
             }
         });
         // Pie Chart
@@ -1361,46 +1674,20 @@ def clients():
                 responsive: false,
                 plugins: {
                     legend: { position: 'bottom', labels: { color: '#fff', font: { size: 14 } } },
-                    title: { display: true, text: 'Client Age Distribution', color: '#fff', font: { size: 22, weight: 'bold' } }
+                    title: { display: true, text: 'Client Age Distribution', color: '#fff', font: { size: 40, weight: 'bold' } }
                 }
             }
         });
-
-        // --- NEW CHARTS ---
-        // 1. Heatmap
-        new Chart(document.getElementById('heatmapChart'), {
-            type: 'bubble',
-            data: { datasets: [{ label: 'Client Signups', data: {{ heatmap_data|tojson }}, backgroundColor: '#4cc9f0' }] },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { title: { display: true, text: 'Client Creation Heatmap', color: '#fff' } },
-                scales: {
-                    x: { title: { display: true, text: 'Month', color: '#fff' }, grid: { color: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff' } },
-                    y: { title: { display: true, text: 'Year', color: '#fff' }, grid: { color: 'rgba(255,255,255,0.2)' }, ticks: { color: '#fff', stepSize: 1 } }
-                }
-            }
-        });
-        // 2. Client Word Cloud
-        new Chart(document.getElementById('clientWordCloudChart'), {
-            type: 'bubble',
-            data: { datasets: [{ label: 'Client Keywords', data: {{ client_word_cloud_data|tojson }}, backgroundColor: vibrantColors }] },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display: false}, title: { display: true, text: 'Client Name Word Cloud', color: '#fff' } } }
-        });
-        // 3. Polar Area Chart
+        // Polar Area Chart
         new Chart(document.getElementById('polarAreaChart'), {
             type: 'polarArea',
             data: { labels: {{ polar_labels|tojson }}, datasets: [{ data: {{ polar_data|tojson }}, backgroundColor: vibrantColors }] },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display: true, labels: {color: '#fff'}}, title: { display: true, text: 'Signups by Day of Week', color: '#fff' } } }
-        });
-        // 4. Time Difference Histogram
-        new Chart(document.getElementById('timeDiffHistogram'), {
-            type: 'bar',
-            data: { labels: {{ time_diff_labels|tojson }}, datasets: [{ label: 'Count', data: {{ time_diff_data|tojson }}, backgroundColor: '#f72585'}] },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display: false}, title: { display: true, text: 'Time Between Client Signups (Days)', color: '#fff' } } }
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display: true, labels: {color: '#fff'}}, title: { display: true, text: 'Signups by Day of Week', color: '#fff', font: { size: 40, weight: 'bold' } } } }
         });
         </script>
     </body>
     </html>
-    ''', table_data=table_data, month_labels=month_labels, counts=counts, top_client_names=top_client_names, top_client_counts=top_client_counts, request=request, pie_labels=pie_labels, pie_data=pie_data, hbar_labels=hbar_labels, hbar_data=hbar_data,
-    heatmap_data=heatmap_data, client_word_cloud_data=client_word_cloud_data, polar_labels=polar_labels, polar_data=polar_data, time_diff_labels=time_diff_labels, time_diff_data=time_diff_data)
+    ''', table_data=table_data, month_labels=month_labels, counts=counts, top_client_names=top_client_names, top_client_counts=top_client_counts, request=request, pie_labels=pie_labels, pie_data=pie_data, hbar_labels=hbar_labels, hbar_data=hbar_data, polar_labels=polar_labels, polar_data=polar_data)
 
 if __name__ == '__main__':
     app.run(debug=True)
