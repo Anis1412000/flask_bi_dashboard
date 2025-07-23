@@ -174,18 +174,16 @@ def dashboard():
     ).offset((page - 1) * per_page).limit(per_page).all()
 
     # Top clients by revenue
-    top_clients_by_revenue = (
-        db.session.query(
-            Partner.name,
-            db.func.sum(SaleOrder.amount_total).label('total_revenue')
-        )
-        .join(SaleOrder, Partner.id == SaleOrder.partner_id)
-        .filter(SaleOrder.date_order.between(start_date, end_date))
-        .group_by(Partner.name)
-        .order_by(db.desc('total_revenue'))
-        .limit(10)
-        .all()
-    )
+    top_clients_by_revenue = db.session.query(
+        Partner.name,
+        db.func.sum(SaleOrder.amount_total).label('total_revenue')
+    ).join(SaleOrder, Partner.id == SaleOrder.partner_id)\
+    .filter(SaleOrder.date_order.between(start_date, end_date))\
+    .group_by(Partner.name)\
+    .order_by(db.desc('total_revenue'))\
+    .limit(10)\
+    .all()
+    
     top_clients_by_revenue = [tuple(row) for row in top_clients_by_revenue]
 
     return render_template_string('''
@@ -531,21 +529,21 @@ def dashboard():
     <div class="chart-slider-container">
         <button class="slider-arrow left" onclick="prevSlide()">&#8592;</button>
         <div class="chart-slider">
-            <div class="slide"><canvas id="trendChart"></canvas></div>
-            <div class="slide"><canvas id="salesStatusPieChart"></canvas></div>
-            <div class="slide"><canvas id="statusChart"></canvas></div>
-            <div class="slide"><canvas id="mostActiveClientsChart"></canvas></div>
-            <div class="slide"><canvas id="mostProfitableClientsChart"></canvas></div>
-            <div class="slide"><canvas id="salesByPeriodChart"></canvas></div>
-            <div class="slide"><canvas id="aovTrendChart"></canvas></div>
-            <div class="slide"><canvas id="topProductsChart"></canvas></div>
-            <div class="slide"><canvas id="salesFunnelChart"></canvas></div>
-            <div class="slide"><canvas id="orderValueHistogram"></canvas></div>
-            <div class="slide"><canvas id="salesHeatmap"></canvas></div>
-            {% if geo_data and geo_data|length > 0 %}
-            <div class="slide"><canvas id="geoSalesMap"></canvas></div>
-            {% endif %}
-            <div class="slide"><canvas id="customerSegmentationChart"></canvas></div>
+            <div class="slide active">
+                <canvas id="salesTrendChart" width="600" height="400" style="display:block;"></canvas>
+            </div>
+            <div class="slide">
+                <canvas id="salesStatusPieChart" width="600" height="400" style="display:block;"></canvas>
+            </div>
+            <div class="slide">
+                <canvas id="mostProfitableClientsChart" width="600" height="400" style="display:block;"></canvas>
+            </div>
+            <div class="slide">
+                <canvas id="mostActiveClientsChart" width="600" height="400" style="display:block;"></canvas>
+            </div>
+            <div class="slide">
+                <canvas id="statusChart" width="600" height="400" style="display:block;"></canvas>
+            </div>
         </div>
         <button class="slider-arrow right" onclick="nextSlide()">&#8594;</button>
     </div>
@@ -1078,31 +1076,49 @@ def dashboard():
                 console.warn('mostActiveClientsChart: Canvas element not found.');
             }
             // --- Most Profitable Clients Bar Chart ---
-            const profitableBarCanvas = document.getElementById('mostProfitableClientsChart');
-            if (profitableBarCanvas) {
-                profitableBarCanvas.width = 600;
-                profitableBarCanvas.height = 400;
-                profitableBarCanvas.style.display = 'block';
-                const profitableBarCtx = profitableBarCanvas.getContext('2d');
-                if (profitableBarCtx) {
-                    let topClients = {{ top_clients_by_revenue|tojson if top_clients_by_revenue else '[]' }};
-                    let labels = topClients.map(c => c[0]);
-                    let data = topClients.map(c => c[1]);
-                    if (!data.length) {
-                        labels = ['Client A', 'Client B', 'Client C', 'Client D', 'Client E'];
-                        data = [12000, 9000, 7000, 5000, 3000]; // Sample data
+            let mostProfitableChartInstance = null;
+            function initMostProfitableClientsChart() {
+                if (mostProfitableChartInstance) return; // Only create once
+                const profitableBarCanvas = document.getElementById('mostProfitableClientsChart');
+                if (profitableBarCanvas && profitableBarCanvas.offsetParent !== null) {
+                    profitableBarCanvas.width = 600;
+                    profitableBarCanvas.height = 400;
+                    profitableBarCanvas.style.display = 'block';
+                    const profitableBarCtx = profitableBarCanvas.getContext('2d');
+                    if (profitableBarCtx) {
+                        let topClients = {{ top_clients_by_revenue|tojson if top_clients_by_revenue else '[]' }};
+                        let labels = topClients.map(c => c[0]);
+                        let data = topClients.map(c => c[1]);
+                        if (!data.length) {
+                            labels = ['Client A', 'Client B', 'Client C', 'Client D', 'Client E'];
+                            data = [12000, 9000, 7000, 5000, 3000]; // Sample data
+                        }
+                        mostProfitableChartInstance = new Chart(profitableBarCtx, {
+                            type: 'bar',
+                            data: { labels, datasets: [{ label: 'Revenue', data, backgroundColor: vibrantColors, borderColor: '#fff', borderWidth: 2 }] },
+                            options: { responsive: true, plugins: { legend: { display: false }, title: { display: true, text: 'Top Clients by Revenue', color: '#fff', font: { size: 24, weight: 'bold' } } }, scales: { x: { ticks: { color: '#fff' } }, y: { ticks: { color: '#fff', callback: (v) => '$' + v.toLocaleString() } } } }
+                        });
+                    } else {
+                        console.warn('mostProfitableClientsChart: Canvas context not found.');
                     }
-                    new Chart(profitableBarCtx, {
-                        type: 'bar',
-                        data: { labels, datasets: [{ label: 'Revenue', data, backgroundColor: vibrantColors, borderColor: '#fff', borderWidth: 2 }] },
-                        options: { responsive: true, plugins: { legend: { display: false }, title: { display: true, text: 'Top Clients by Revenue', color: '#fff', font: { size: 24, weight: 'bold' } } }, scales: { x: { ticks: { color: '#fff' } }, y: { ticks: { color: '#fff', callback: (v) => '$' + v.toLocaleString() } } } }
-                    });
                 } else {
-                    console.warn('mostProfitableClientsChart: Canvas context not found.');
+                    console.warn('mostProfitableClientsChart: Canvas element not found or not visible.');
                 }
-            } else {
-                console.warn('mostProfitableClientsChart: Canvas element not found.');
             }
+            // ... existing code ...
+            function showSlide(idx) {
+                const slides = document.querySelectorAll('.chart-slider .slide');
+                if (!slides.length) return;
+                slides.forEach((slide, i) => {
+                    slide.classList.toggle('active', i === idx);
+                });
+                // If the most profitable clients slide is now visible, initialize the chart
+                const profitableSlideIdx = Array.from(document.querySelectorAll('.chart-slider .slide')).findIndex(slide => slide.querySelector('#mostProfitableClientsChart'));
+                if (idx === profitableSlideIdx) {
+                    initMostProfitableClientsChart();
+                }
+            }
+            // ... existing code ...
         });
 
         let currentSlide = 0;
@@ -1112,6 +1128,11 @@ def dashboard():
             slides.forEach((slide, i) => {
                 slide.classList.toggle('active', i === idx);
             });
+            // If the most profitable clients slide is now visible, initialize the chart
+            const profitableSlideIdx = Array.from(document.querySelectorAll('.chart-slider .slide')).findIndex(slide => slide.querySelector('#mostProfitableClientsChart'));
+            if (idx === profitableSlideIdx) {
+                initMostProfitableClientsChart();
+            }
         }
         function prevSlide() {
             const slides = document.querySelectorAll('.chart-slider .slide');
